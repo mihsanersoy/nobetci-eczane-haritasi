@@ -50,10 +50,36 @@ TURKIYE_81_IL_SLUGS: List[str] = PRIORITY_CITIES + [
     c for c in ALL_81_CITIES if c not in PRIORITY_CITIES
 ]
 
+# Geocoding (Nominatim & ArcGIS) sorgularında "cankiri cant found" hatasını önlemek için
+# URL slug -> Gerçek Türkçe Şehir Adı eşleştirme tablosu
+SEHIR_TURKCE_ISIM_MAP: Dict[str, str] = {
+    "adana": "Adana", "adiyaman": "Adıyaman", "afyonkarahisar": "Afyonkarahisar",
+    "agri": "Ağrı", "amasya": "Amasya", "ankara": "Ankara", "antalya": "Antalya",
+    "artvin": "Artvin", "aydin": "Aydın", "balikesir": "Balıkesir", "bilecik": "Bilecik",
+    "bingol": "Bingöl", "bitlis": "Bitlis", "bolu": "Bolu", "burdur": "Burdur",
+    "bursa": "Bursa", "canakkale": "Çanakkale", "cankiri": "Çankırı", "corum": "Çorum",
+    "denizli": "Denizli", "diyarbakir": "Diyarbakır", "edirne": "Edirne", "elazig": "Elazığ",
+    "erzincan": "Erzincan", "erzurum": "Erzurum", "eskisehir": "Eskişehir",
+    "gaziantep": "Gaziantep", "giresun": "Giresun", "gumushane": "Gümüşhane",
+    "hakkari": "Hakkari", "hatay": "Hatay", "isparta": "Isparta", "mersin": "Mersin",
+    "istanbul": "İstanbul", "izmir": "İzmir", "kars": "Kars", "kastamonu": "Kastamonu",
+    "kayseri": "Kayseri", "kirklareli": "Kırklareli", "kirsehir": "Kırşehir",
+    "kocaeli": "Kocaeli", "konya": "Konya", "kutahya": "Kütahya", "malatya": "Malatya",
+    "manisa": "Manisa", "kahramanmaras": "Kahramanmaraş", "mardin": "Mardin",
+    "mugla": "Muğla", "mus": "Muş", "nevsehir": "Nevşehir", "nigde": "Niğde",
+    "ordu": "Ordu", "rize": "Rize", "sakarya": "Sakarya", "samsun": "Samsun",
+    "siirt": "Siirt", "sinop": "Sinop", "sivas": "Sivas", "tekirdag": "Tekirdağ",
+    "tokat": "Tokat", "trabzon": "Trabzon", "tunceli": "Tunceli", "sanliurfa": "Şanlıurfa",
+    "usak": "Uşak", "van": "Van", "yozgat": "Yozgat", "zonguldak": "Zonguldak",
+    "aksaray": "Aksaray", "bayburt": "Bayburt", "karaman": "Karaman",
+    "kirikkale": "Kırıkkale", "batman": "Batman", "sirnak": "Şırnak", "bartin": "Bartın",
+    "ardahan": "Ardahan", "igdir": "Iğdır", "yalova": "Yalova", "karabuk": "Karabük",
+    "kilis": "Kilis", "osmaniye": "Osmaniye", "duzce": "Düzce",
+}
+
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 ARCGIS_GEOCODE_URL = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
 
-# curl_cffi ile taklit edilecek gerçek tarayıcı TLS profilleri (JA3/JA4 + HTTP/2 Fingerprint)
 BROWSER_IMPERSONATIONS: List[str] = ["chrome124", "chrome120", "chrome119", "safari17_0"]
 
 NOMINATIM_HEADERS = {
@@ -64,7 +90,7 @@ NOMINATIM_HEADERS = {
 
 COORD_REGEX = re.compile(r"(-?\d{1,2}\.\d{3,8})\s*,\s*(-?\d{1,3}\.\d{3,8})")
 PHONE_REGEX = re.compile(
-    r"(0?\s*\(?\d{3}\)?[\s\-\.]*\d{3}[\s\-\.]*\d{2}[\s\-\.]*\d{2}|\d{4}\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2})"
+    r"(0?\s*\(?\d{3}\)?[\s\-\.]*\d{3}[\s\-\.]*\d{2}[\s\-\.]*\d{2}|\+90\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2}|\d{4}\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2})"
 )
 
 
@@ -136,13 +162,15 @@ async def fetch_coordinates_from_address(
 ) -> Tuple[Optional[float], Optional[float]]:
     """
     Kaynak sitede harita koordinatı bulunmayan eczaneler için Geocoding çözümlemesi yapar.
+    Şehir adını (`cankiri` -> `Çankırı`) gerçek Türkçe karakterli karşılığına çevirerek arar.
     """
+    sehir_tr = SEHIR_TURKCE_ISIM_MAP.get(sehir.strip().lower(), sehir.capitalize())
     core_parts = _extract_core_street_components(adres)
 
     nominatim_queries: List[str] = []
     for part in core_parts:
-        nominatim_queries.append(f"{part}, {ilce}, {sehir}, Türkiye")
-    nominatim_queries.append(f"{isim}, {ilce}, {sehir}, Türkiye")
+        nominatim_queries.append(f"{part}, {ilce}, {sehir_tr}, Türkiye")
+    nominatim_queries.append(f"{isim}, {ilce}, {sehir_tr}, Türkiye")
 
     async with httpx.AsyncClient(
         headers=NOMINATIM_HEADERS,
@@ -167,14 +195,14 @@ async def fetch_coordinates_from_address(
                     lon = float(results[0]["lon"])
                     if 35.5 <= lat <= 42.5 and 25.5 <= lon <= 45.0:
                         logger.info(
-                            f"[Nominatim Başarılı] '{isim}' ({sehir}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
+                            f"[Nominatim Başarılı] '{isim}' ({sehir_tr}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
                         )
                         return lat, lon
             except Exception as exc:
                 logger.warning(f"[Nominatim Uyarı] '{isim}' ({query}): {exc}")
 
         # Bulanık Arama (Fuzzy Geocoding) Yedeği
-        full_query = f"{isim}, {adres}, {ilce}, {sehir}, Türkiye"
+        full_query = f"{isim}, {adres}, {ilce}, {sehir_tr}, Türkiye"
         try:
             arc_params = {
                 "SingleLine": full_query,
@@ -191,7 +219,7 @@ async def fetch_coordinates_from_address(
                 lat, lon = float(loc["y"]), float(loc["x"])
                 if 35.5 <= lat <= 42.5 and 25.5 <= lon <= 45.0:
                     logger.info(
-                        f"[Fuzzy Geocoding Başarılı] '{isim}' ({sehir}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
+                        f"[Fuzzy Geocoding Başarılı] '{isim}' ({sehir_tr}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
                     )
                     return lat, lon
         except Exception as exc:
@@ -200,10 +228,81 @@ async def fetch_coordinates_from_address(
     return None, None
 
 
+def parse_eczaneler_org_html(html_content: str, sehir: str, target_date: date) -> List[EczaneCreate]:
+    """
+    Yedek Türkiye Kaynağı (`eczaneler.org/{sehir}-nobetci-eczaneler/`) HTML ayrıştırıcısı.
+    Tamamen ücretsizdir, Cloudflare 403 veya dakikada 5 istek sınırı yoktur.
+    """
+    soup = BeautifulSoup(html_content, "lxml")
+    parsed_list: List[EczaneCreate] = []
+    sehir_normalized = sehir.strip().lower()
+
+    # eczaneler.org üzerinde her eczane başlığı <a title="... Eczanesi" href="/..."> içinde yer alır
+    title_links = soup.select('a[title*="Eczane"], a[href*="-eczanesi"]')
+    seen_names = set()
+
+    for link_el in title_links:
+        isim = _clean_text(link_el.get_text())
+        if not isim or "eczane" not in isim.lower() or len(isim) > 100:
+            continue
+        if isim.lower() in seen_names:
+            continue
+
+        # Kart kapsayıcısını bul
+        card = link_el.find_parent("div", class_=lambda c: c and ("rounded" in c or "border" in c or "p-4" in c))
+        if card is None:
+            card = link_el.find_parent("div")
+        if card is None:
+            continue
+
+        # İlçe bilgisini çıkar ("Bitlis / Merkez" -> "Merkez")
+        ilce = "Merkez"
+        for span in card.find_all("span"):
+            s_text = _clean_text(span.get_text())
+            if "/" in s_text and len(s_text) < 50:
+                parts = [p.strip() for p in s_text.split("/") if p.strip()]
+                if len(parts) >= 2:
+                    ilce = parts[-1]
+                    break
+
+        # Adres bilgisini çıkar (<p> etiketi içinde yer alır)
+        adres = "Adres bilgisi detayda belirtilmemiştir."
+        p_el = card.find("p")
+        if p_el:
+            adres_candidate = _clean_text(p_el.get_text())
+            if len(adres_candidate) >= 5:
+                adres = adres_candidate
+
+        # Telefon bilgisini çıkar
+        telefon: Optional[str] = None
+        tel_link = card.find("a", href=re.compile(r"^tel:", re.I))
+        if tel_link:
+            telefon = _clean_text(tel_link.get_text()) or _clean_text(tel_link["href"].replace("tel:", ""))
+
+        # Koordinat varsa çıkar
+        enlem, boylam = _extract_coordinates(card)
+
+        seen_names.add(isim.lower())
+        parsed_list.append(
+            EczaneCreate(
+                isim=isim[:255],
+                sehir=sehir_normalized[:50],
+                ilce=ilce[:100],
+                adres=adres,
+                telefon=telefon[:30] if telefon else None,
+                enlem=enlem,
+                boylam=boylam,
+                nobet_tarihi=target_date,
+            )
+        )
+
+    return parsed_list
+
+
 def parse_eczaneler_html(html_content: str, sehir: str, target_date: date) -> List[EczaneCreate]:
     """
-    Belirtilen şehre ait HTML içeriğini ayrıştırır ve `sehir` bilgisini ekleyerek
-    EczaneCreate listesine dönüştürür.
+    Hem birincil (`eczaneler.gen.tr`) hem de ikincil (`eczaneler.org`) kaynağın HTML içeriğini
+    otomatik tanıyıp EczaneCreate listesine dönüştürür.
     """
     soup = BeautifulSoup(html_content, "lxml")
     parsed_list: List[EczaneCreate] = []
@@ -216,6 +315,10 @@ def parse_eczaneler_html(html_content: str, sehir: str, target_date: date) -> Li
     )
 
     name_elements = active_scope.select("span.isim, div.isim, a.isim, strong.isim")
+
+    # Eğer HTML ikincil kaynaktan (eczaneler.org) geldiyse onun parser'ını çalıştır
+    if not name_elements:
+        return parse_eczaneler_org_html(html_content, sehir=sehir, target_date=target_date)
 
     for name_el in name_elements:
         isim = _clean_text(name_el.get_text())
@@ -286,16 +389,13 @@ def parse_eczaneler_html(html_content: str, sehir: str, target_date: date) -> Li
     return parsed_list
 
 
-from urllib.parse import quote
-
-
 async def _http_get_text(url: str, headers: Dict[str, str], impersonate_profile: str) -> Tuple[int, str]:
     """
     Konteynerde curl_cffi yüklüyse Chrome TLS Impersonation ile, henüz kurulmamışsa
     httpx.AsyncClient ile HTTP GET isteği yapar.
     """
     if HAS_CURL_CFFI and CurlAsyncSession is not None:
-        async with CurlAsyncSession(timeout=20) as c_client:
+        async with CurlAsyncSession(timeout=18) as c_client:
             resp = await c_client.get(
                 url,
                 headers=headers,
@@ -311,47 +411,41 @@ async def _http_get_text(url: str, headers: Dict[str, str], impersonate_profile:
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
             ),
         }
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as h_client:
+        async with httpx.AsyncClient(timeout=18.0, follow_redirects=True) as h_client:
             resp = await h_client.get(url, headers=httpx_headers)
             return resp.status_code, resp.text
 
 
 async def fetch_sehir_eczaneler_html(sehir: str) -> str:
     """
-    1. Önce doğrudan `/nobetci-{sehir}` adresini dener.
-    2. Eğer yerel IP adresi hedef siteden 403/429 (IP Ban) yemişse, otomatik olarak
-       yedek relay/mirror geçitleri üzerinden aynı sayfanın orijinal HTML kaynağını çeker.
+    Çift Kaynaklı (Dual-Source) Veri Çekici:
+    1. Önce birincil kaynağı (`eczaneler.gen.tr/nobetci-{sehir}`) dener.
+    2. Eğer birincil kaynak 403/429 (IP Ban) dönerse, hiçbir dakikada 5 istek sınırı olmayan
+       ve doğrudan Türkiye'den 200 OK dönen ikincil resmi kaynağa (`eczaneler.org/{sehir}-nobetci-eczaneler/`) geçer!
     """
-    nobetci_url = f"https://www.eczaneler.gen.tr/nobetci-{sehir}"
+    primary_url = f"https://www.eczaneler.gen.tr/nobetci-{sehir}"
+    secondary_url = f"https://www.eczaneler.org/{sehir}-nobetci-eczaneler/"
     headers = _get_browser_headers()
     impersonate_profile = random.choice(BROWSER_IMPERSONATIONS)
 
-    # AŞAMA 1: Doğrudan Bağlantı
+    # KAYNAK 1: eczaneler.gen.tr
     try:
-        status_code, text = await _http_get_text(nobetci_url, headers, impersonate_profile)
+        status_code, text = await _http_get_text(primary_url, headers, impersonate_profile)
         if status_code == 200 and "isim" in text:
             return text
-    except Exception as direct_err:
-        logger.warning(f"[Scraper] '{sehir}' doğrudan bağlantı uyarısı: {direct_err}")
+    except Exception as primary_err:
+        logger.debug(f"[Scraper] '{sehir}' birincil kaynak uyarısı: {primary_err}")
 
-    # AŞAMA 2: Yerel IP 403 Ban durumunda Yedek Relay Geçitleri (Multi-Gateway Fallback)
-    encoded_url = quote(nobetci_url, safe="")
-    fallback_gateways = [
-        f"https://api.codetabs.com/v1/proxy?quest={nobetci_url}",
-        f"https://api.allorigins.win/raw?url={encoded_url}",
-        f"https://corsproxy.io/?{encoded_url}",
-    ]
+    # KAYNAK 2: eczaneler.org (Limitsiz, hızlı ve Cloudflare 403 engeli yok)
+    try:
+        status_code, text = await _http_get_text(secondary_url, headers, impersonate_profile)
+        if status_code == 200 and "Eczane" in text:
+            logger.info(f"[Scraper] '{sehir}' verisi ikincil kaynak (eczaneler.org) üzerinden başarıyla çekildi.")
+            return text
+    except Exception as sec_err:
+        logger.warning(f"[Scraper] '{sehir}' ikincil kaynak hatası: {sec_err}")
 
-    for gateway_url in fallback_gateways:
-        try:
-            status_code, text = await _http_get_text(gateway_url, headers, impersonate_profile)
-            if status_code == 200 and "isim" in text:
-                logger.info(f"[Scraper] '{sehir}' verisi yedek geçit üzerinden başarıyla çekildi.")
-                return text
-        except Exception as gw_err:
-            logger.warning(f"[Scraper] '{sehir}' yedek geçit denemesi başarısız: {gw_err}")
-
-    raise RuntimeError(f"'{sehir}' için hem doğrudan bağlantı hem de yedek geçitler başarısız oldu.")
+    raise RuntimeError(f"'{sehir}' için her iki veri kaynağından da yanıt alınamadı.")
 
 
 async def get_historical_coordinates(
@@ -528,13 +622,15 @@ async def scrape_and_save_all_eczaneler(
     force: bool = False,
 ) -> dict:
     """
-    curl_cffi (Chrome TLS Impersonation) + Anti-Ban Korumalı Türkiye Nöbetçi Eczane Kazıyıcısı.
+    Çift Kaynaklı (eczaneler.gen.tr + eczaneler.org) Türkiye 81 İl Nöbetçi Eczane Kazıyıcısı.
+    - Zaten çekilmiş illeri 0 saniyede (beklemeden) atlar.
+    - Eksik illeri birincil kaynak 403 verse bile ikincil kaynak üzerinden kesintisiz tamamlar.
     """
     today_tr = datetime.now(ZoneInfo("Europe/Istanbul")).date()
     cities_to_scrape = target_cities or TURKIYE_81_IL_SLUGS
 
     logger.info(
-        f"[Scraper] curl_cffi Chrome TLS ile tarama başlatıldı "
+        f"[Scraper] 81 İl Taraması başlatıldı "
         f"(Hedef İl Sayısı: {len(cities_to_scrape)}, Tarih: {today_tr}, Force: {force})"
     )
 
@@ -547,13 +643,13 @@ async def scrape_and_save_all_eczaneler(
     for index, sehir in enumerate(cities_to_scrape):
         sehir_slug = sehir.strip().lower()
 
-        # 1. Akıllı Atlama (Smart Skip): Veritabanında güncel kayıt varsa dış kaynağa hiç gitme
+        # 1. Akıllı Atlama (Smart Skip): Veritabanında güncel kayıt varsa hiç beklemeden (0 sn) geç!
         if not force:
             async with AsyncSessionLocal() as check_session:
                 if await is_city_recently_scraped(check_session, sehir_slug, today_tr):
                     skipped_cities += 1
                     logger.info(
-                        f"[Scraper] ({index + 1}/{len(cities_to_scrape)}) '{sehir_slug}' zaten güncel, atlanıyor."
+                        f"[Scraper] ({index + 1}/{len(cities_to_scrape)}) '{sehir_slug}' zaten güncel, beklemeden atlanıyor."
                     )
                     continue
 
@@ -584,9 +680,9 @@ async def scrape_and_save_all_eczaneler(
             failed_cities.append(sehir_slug)
             logger.error(f"[Scraper] '{sehir_slug}' ili taranırken hata oluştu: {exc}")
 
-        # Anti-Ban Jitter: 6.0 ile 12.0 sn arası rastgele bekleme
+        # İller arası nazik bekleme (3.0 - 6.0 sn)
         if index < len(cities_to_scrape) - 1:
-            jitter_delay = round(random.uniform(6.0, 12.0), 2)
+            jitter_delay = round(random.uniform(3.0, 6.0), 2)
             await asyncio.sleep(jitter_delay)
 
     logger.info(
