@@ -1,0 +1,96 @@
+version: "3.9"
+
+services:
+  # 1. PostgreSQL Veritabanı Servisi
+  db:
+    image: postgres:16-alpine
+    container_name: eczane_postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eczane_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eczane_secret_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-nobetci_eczane_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eczane_user} -d ${POSTGRES_DB:-nobetci_eczane_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - eczane_network
+
+  # 2. Redis Önbellek (Cache) Servisi
+  redis:
+    image: redis:7-alpine
+    container_name: eczane_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - eczane_network
+
+  # 3. FastAPI Backend Servisi
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: eczane_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eczane_user}:${POSTGRES_PASSWORD:-eczane_secret_pass}@db:5432/${POSTGRES_DB:-nobetci_eczane_db}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - eczane_network
+
+  # 4. Next.js Frontend Servisi (Frontend kurulumu tamamlandığında aktif edilecektir)
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: eczane_frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - eczane_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  eczane_network:
+    driver: bridge

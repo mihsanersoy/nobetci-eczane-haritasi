@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Leaflet harita katmanlarının üst menülerin altında kalmasını sağlar */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  font-family: inherit;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15);
+  padding: 2px;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px;
+  line-height: 1.4;
+}

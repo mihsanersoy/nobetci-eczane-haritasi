@@ -1,0 +1,53 @@
+# ==========================================
+# ORTAM DEĞİŞKENLERİ & GİZLİ ANAHTARLAR (KRİTİK!)
+# ==========================================
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# POSTMAN & API TEST ARAÇLARI (Token/Session Sızıntısını Önler)
+# ==========================================
+.postman/
+postman/
+
+# ==========================================
+# PYTHON & FASTAPI
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.pytest_cache/
+*.log
+
+# ==========================================
+# NEXT.JS / NODE.JS
+# ==========================================
+node_modules/
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# ==========================================
+# DOCKER & VERİTABANI VOLUME DOSYALARI
+# ==========================================
+postgres_data/
+redis_data/
+*.sql
+*.dump
+*.db
+*.sqlite3
+
+# ==========================================
+# IDE & İŞLETİM SİSTEMİ
+# ==========================================
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
