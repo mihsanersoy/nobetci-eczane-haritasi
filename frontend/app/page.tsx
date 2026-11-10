@@ -298,14 +298,14 @@ export default function HomePage() {
     });
   }, [eczaneler, selectedIlce, searchQuery]);
 
-  // Google Maps Yol Tarifi Linki
+  // Google Maps Yol Tarifi Linki:
+  // Nominatim cadde-ortası koordinatının Google Maps'te yan bina/farklı eczane göstermesini
+  // önlemek için Google Maps'in kendi POI veritabanına doğrudan eczane adı + açık adres gönderilir.
   const getDirectionsUrl = (eczane: Eczane) => {
-    if (eczane.enlem && eczane.boylam) {
-      return `https://www.google.com/maps/dir/?api=1&destination=${eczane.enlem},${eczane.boylam}`;
-    }
     const cityName = selectedCityObj ? selectedCityObj.name : eczane.sehir;
+    const cleanAdres = eczane.adres.split("→")[0].trim();
     const query = encodeURIComponent(
-      `${eczane.isim} Eczanesi ${eczane.adres} ${eczane.ilce} ${cityName}`
+      `${eczane.isim}, ${cleanAdres}, ${eczane.ilce}, ${cityName}, Türkiye`
     );
     return `https://www.google.com/maps/dir/?api=1&destination=${query}`;
   };

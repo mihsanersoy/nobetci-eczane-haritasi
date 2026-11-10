@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -188,19 +188,26 @@ export default function MapComponent({
 }: MapComponentProps) {
   const defaultIcon = useMemo(() => createPharmacyIcon(false), []);
   const selectedIcon = useMemo(() => createPharmacyIcon(true), []);
+  const markerRefs = useRef<Record<string, L.Marker | null>>({});
+
+  // Sol listeden bir eczaneye tıklandığında haritadaki baloncuğunu (Popup) otomatik aç
+  useEffect(() => {
+    if (selectedEczane && markerRefs.current[selectedEczane.id]) {
+      markerRefs.current[selectedEczane.id]?.openPopup();
+    }
+  }, [selectedEczane]);
 
   const initialCenter = selectedCity
     ? CITY_CENTER_MAP[selectedCity] || DEFAULT_CENTER
     : TURKEY_OVERVIEW_CENTER;
   const initialZoom = selectedCity ? 11 : TURKEY_OVERVIEW_ZOOM;
 
-  // Google Haritalar Yol Tarifi URL üreticisi
+  // Google Haritalar Yol Tarifi URL üreticisi:
+  // Yaklaşık cadde koordinatı yerine eczane adı + açık adres göndererek Google Maps POI eşleşmesi sağlar.
   const getDirectionsUrl = (eczane: Eczane) => {
-    if (eczane.enlem && eczane.boylam) {
-      return `https://www.google.com/maps/dir/?api=1&destination=${eczane.enlem},${eczane.boylam}`;
-    }
+    const cleanAdres = eczane.adres.split("→")[0].trim();
     const query = encodeURIComponent(
-      `${eczane.isim} Eczanesi ${eczane.adres} ${eczane.ilce} ${selectedCityName}`
+      `${eczane.isim}, ${cleanAdres}, ${eczane.ilce}, ${selectedCityName}, Türkiye`
     );
     return `https://www.google.com/maps/dir/?api=1&destination=${query}`;
   };
@@ -254,6 +261,9 @@ export default function MapComponent({
             return (
               <Marker
                 key={eczane.id}
+                ref={(ref) => {
+                  markerRefs.current[eczane.id] = ref;
+                }}
                 position={position}
                 icon={isSelected ? selectedIcon : defaultIcon}
                 eventHandlers={{
