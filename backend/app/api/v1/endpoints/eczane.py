@@ -14,7 +14,11 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.eczane import Eczane
 from app.schemas.eczane import EczaneResponse
-from app.services.scraper import TURKIYE_81_IL_SLUGS, scrape_and_save_all_eczaneler
+from app.services.scraper import (
+    TURKIYE_81_IL_SLUGS,
+    sanitize_existing_database_records,
+    scrape_and_save_all_eczaneler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +115,14 @@ async def get_database_stats(
         "toplam_koordinatli": sum(c["koordinatli_eczane"] for c in cities_summary),
         "iller": cities_summary,
     }
+
+
+@router.post(
+    "/system/cleanup",
+    summary="Veritabanındaki honeypot ve sahte kayıtları SQL ile temizle",
+)
+async def trigger_database_cleanup() -> dict:
+    return await sanitize_existing_database_records()
 
 
 # ==========================================

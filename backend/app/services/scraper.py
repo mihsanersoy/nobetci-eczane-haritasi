@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import redis.asyncio as aioredis
 from bs4 import BeautifulSoup, Tag
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
@@ -92,6 +92,39 @@ COORD_REGEX = re.compile(r"(-?\d{1,2}\.\d{3,8})\s*,\s*(-?\d{1,3}\.\d{3,8})")
 PHONE_REGEX = re.compile(
     r"(0?\s*\(?\d{3}\)?[\s\-\.]*\d{3}[\s\-\.]*\d{2}[\s\-\.]*\d{2}|\+90\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2}|\d{4}\s*\(\d{3}\)\s*\d{3}-\d{2}-\d{2})"
 )
+
+# Honeypot (Anti-Scraping Tuzak Metni) temizleme Regex'i
+HONEYPOT_REGEX = re.compile(
+    r"Bu\s+yazıyı\s+okuduğunuz\s+websitesi.*?Tüketici\s+Hakem\s+Heyetine\s+başvurunuz\.?\s*(?:→|»|«|-)*\s*",
+    re.I | re.S,
+)
+
+
+def _strip_hidden_elements(scope: Tag) -> None:
+    """
+    HTML içerisindeki CSS ile gizlenmiş (display:none, visibility:hidden, font-size:0, d-none)
+    honeypot/tuzak elementlerini DOM ağacından tamamen kaldırır.
+    """
+    for hidden in scope.select(
+        '[style*="display:none"], [style*="display: none"], '
+        '[style*="visibility:hidden"], [style*="visibility: hidden"], '
+        '[style*="font-size:0"], [style*="font-size: 0"], '
+        '[style*="opacity:0"], [style*="opacity: 0"], '
+        '.d-none, .hidden, .sr-only, [hidden]'
+    ):
+        hidden.decompose()
+
+
+def _sanitize_address(adres: str) -> str:
+    """
+    Adresteki honeypot tuzak cümlelerini, fazlalık ok işaretlerini ve şehir tekrarlarını temizler.
+    """
+    cleaned = HONEYPOT_REGEX.sub("", adres)
+    cleaned = re.sub(r"[A-Za-zÇĞİÖŞÜçğıöşü]+\s*»\s*", "", cleaned)
+    cleaned = re.sub(r"»[A-Za-zÇĞİÖŞÜçğıöşü0-9\s\.\:\'\(\)]+«", "", cleaned)
+    cleaned = re.sub(r"(\/\s*)+[A-Za-zÇĞİÖŞÜçğıöşü]+(\s*→)?", " →", cleaned, flags=re.I)
+    cleaned = _clean_text(cleaned).strip(" -–—,/|»«→:")
+    return cleaned
 
 
 def _get_browser_headers() -> Dict[str, str]:
@@ -231,55 +264,60 @@ async def fetch_coordinates_from_address(
 def parse_eczaneler_org_html(html_content: str, sehir: str, target_date: date) -> List[EczaneCreate]:
     """
     Yedek Türkiye Kaynağı (`eczaneler.org/{sehir}-nobetci-eczaneler/`) HTML ayrıştırıcısı.
-    Tamamen ücretsizdir, Cloudflare 403 veya dakikada 5 istek sınırı yoktur.
+    Sahte/şablon linkleri (boş adresli footer linklerini) sıkı doğrulama filtresiyle eler.
     """
     soup = BeautifulSoup(html_content, "lxml")
+    _strip_hidden_elements(soup)
     parsed_list: List[EczaneCreate] = []
     sehir_normalized = sehir.strip().lower()
 
-    # eczaneler.org üzerinde her eczane başlığı <a title="... Eczanesi" href="/..."> içinde yer alır
-    title_links = soup.select('a[title*="Eczane"], a[href*="-eczanesi"]')
+    title_links = soup.select('a[title*="Eczane"]')
     seen_names = set()
 
     for link_el in title_links:
         isim = _clean_text(link_el.get_text())
         if not isim or "eczane" not in isim.lower() or len(isim) > 100:
             continue
+        # Genel şablon başlıklarını ("Nöbetçi Eczaneler", "En Yakın Eczane" vb.) ele
+        if any(bad in isim.lower() for bad in ("nöbetçi", "nobetci", "yakın", "tüm", "liste", "harita")):
+            continue
         if isim.lower() in seen_names:
             continue
 
-        # Kart kapsayıcısını bul
-        card = link_el.find_parent("div", class_=lambda c: c and ("rounded" in c or "border" in c or "p-4" in c))
-        if card is None:
-            card = link_el.find_parent("div")
+        # Gerçek eczane kartı kapsayıcısını bul
+        card = link_el.find_parent("div", class_=lambda c: c and ("rounded" in c or "border" in c))
         if card is None:
             continue
 
-        # İlçe bilgisini çıkar ("Bitlis / Merkez" -> "Merkez")
+        # Doğrulama Filtresi 1: Kartın içinde gerçek bir <p> açık adres etiketi ZORUNLUDUR
+        p_el = card.find("p")
+        if p_el is None:
+            continue
+        adres = _sanitize_address(p_el.get_text(" "))
+        if len(adres) < 10 or "belirtilmemiştir" in adres.lower():
+            continue
+
+        # Doğrulama Filtresi 2: "İl / İlçe" rozeti veya telefon bağlantısı bulunmalıdır
         ilce = "Merkez"
+        has_valid_badge = False
         for span in card.find_all("span"):
             s_text = _clean_text(span.get_text())
             if "/" in s_text and len(s_text) < 50:
                 parts = [p.strip() for p in s_text.split("/") if p.strip()]
                 if len(parts) >= 2:
                     ilce = parts[-1]
+                    has_valid_badge = True
                     break
 
-        # Adres bilgisini çıkar (<p> etiketi içinde yer alır)
-        adres = "Adres bilgisi detayda belirtilmemiştir."
-        p_el = card.find("p")
-        if p_el:
-            adres_candidate = _clean_text(p_el.get_text())
-            if len(adres_candidate) >= 5:
-                adres = adres_candidate
-
-        # Telefon bilgisini çıkar
-        telefon: Optional[str] = None
         tel_link = card.find("a", href=re.compile(r"^tel:", re.I))
+        telefon: Optional[str] = None
         if tel_link:
             telefon = _clean_text(tel_link.get_text()) or _clean_text(tel_link["href"].replace("tel:", ""))
 
-        # Koordinat varsa çıkar
+        # Hem il/ilçe rozeti yok hem de telefonu yoksa bu bir footer/reklam linkidir -> Atla!
+        if not has_valid_badge and not telefon:
+            continue
+
         enlem, boylam = _extract_coordinates(card)
 
         seen_names.add(isim.lower())
@@ -303,8 +341,10 @@ def parse_eczaneler_html(html_content: str, sehir: str, target_date: date) -> Li
     """
     Hem birincil (`eczaneler.gen.tr`) hem de ikincil (`eczaneler.org`) kaynağın HTML içeriğini
     otomatik tanıyıp EczaneCreate listesine dönüştürür.
+    Gizli honeypot etiketlerini (`display:none` vb.) ayrıştırma öncesinde temizler.
     """
     soup = BeautifulSoup(html_content, "lxml")
+    _strip_hidden_elements(soup)
     parsed_list: List[EczaneCreate] = []
     sehir_normalized = sehir.strip().lower()
 
@@ -316,7 +356,6 @@ def parse_eczaneler_html(html_content: str, sehir: str, target_date: date) -> Li
 
     name_elements = active_scope.select("span.isim, div.isim, a.isim, strong.isim")
 
-    # Eğer HTML ikincil kaynaktan (eczaneler.org) geldiyse onun parser'ını çalıştır
     if not name_elements:
         return parse_eczaneler_org_html(html_content, sehir=sehir, target_date=target_date)
 
@@ -365,13 +404,11 @@ def parse_eczaneler_html(html_content: str, sehir: str, target_date: date) -> Li
         adres = raw_text
         for token in filter(None, [isim, ilce, telefon]):
             adres = adres.replace(token, "").strip(" -–—,/|:")
-        adres = re.sub(r"[A-Za-zÇĞİÖŞÜçğıöşü]+\s*»\s*", "", adres)
-        adres = re.sub(r"»[A-Za-zÇĞİÖŞÜçğıöşü0-9\s\.\:\'\(\)]+«", "", adres)
-        adres = re.sub(r"(\/\s*)+[A-Za-zÇĞİÖŞÜçğıöşü]+(\s*→)?", " →", adres, flags=re.I)
-        adres = _clean_text(adres).strip(" -–—,/|»«:")
+        adres = _sanitize_address(adres)
 
-        if len(adres) < 5:
-            adres = "Adres bilgisi detayda belirtilmemiştir."
+        # Doğrulama Filtresi: Geçerli bir açık adres kalmadıysa sahte/bozuk kaydı atla
+        if len(adres) < 5 or "belirtilmemiştir" in adres.lower():
+            continue
 
         parsed_list.append(
             EczaneCreate(
@@ -482,10 +519,10 @@ async def get_historical_coordinates(
     return None, None
 
 
-async def is_city_recently_scraped(session: AsyncSession, sehir: str, target_date: date, max_age_hours: int = 5) -> bool:
+async def is_city_recently_scraped(session: AsyncSession, sehir: str, target_date: date, max_age_hours: int = 3) -> bool:
     """
-    Belirtilen şehrin bugüne ait verisi veritabanında zaten varsa ve son `max_age_hours`
-    içinde çekilmişse True döndürür.
+    Belirtilen şehrin bugüne ait verisi veritabanında zaten varsa ve son `max_age_hours` (3 saat)
+    içinde çekilmişse True döndürür. (Sabah 08:05 vardiyasının gece taramasıyla çakışmaması için 3 saate düşürüldü).
     """
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
     stmt = (
@@ -698,6 +735,73 @@ async def scrape_and_save_all_eczaneler(
         "updated": total_updated,
         "failed_cities": failed_cities,
         "date": str(today_tr),
+    }
+
+
+async def sanitize_existing_database_records() -> dict:
+    """
+    Mevcut veritabanındaki kirli verileri (Honeypot metinlerini ve sahte boş adresli kayıtları)
+    doğrudan SQL sorgularıyla temizler ve Redis önbelleğini sıfırlar:
+    1. İkincil kaynaktan sızan 126 adet sahte ('Adres bilgisi detayda belirtilmemiştir.') kaydı DELETE eder.
+    2. Honeypot tuzak metnini ('Bu yazıyı okuduğunuz websitesi...') SQL regexp_replace ile tek sorguda temizler.
+    3. Honeypot silindikten sonra geriye anlamlı adres kalmayan (<5 karakter) kayıtları DELETE eder.
+    4. Redis önbelleğindeki tüm şehir/ilçe anahtarlarını temizler.
+    """
+    async with AsyncSessionLocal() as session:
+        # 1. Sahte (boş adresli) kayıtları sil
+        del_fake_stmt = delete(Eczane).where(
+            Eczane.adres.ilike("%Adres bilgisi detayda belirtilmemiştir%")
+        )
+        res_fake = await session.execute(del_fake_stmt)
+        deleted_fake_count = res_fake.rowcount or 0
+
+        # 2. Honeypot tuzak metnini tek bir PostgreSQL regexp_replace sorgusuyla temizle
+        sql_cleanup = text("""
+            UPDATE eczaneler
+            SET adres = btrim(
+                regexp_replace(
+                    adres,
+                    'Bu\\s+yazıyı\\s+okuduğunuz\\s+websitesi.*?Tüketici\\s+Hakem\\s+Heyetine\\s+başvurunuz\\.?\\s*(?:→|»|«|-)*\\s*',
+                    '',
+                    'gi'
+                ),
+                ' -–—,/|»«→:'
+            )
+            WHERE adres ILIKE '%eczaneler.gen.tr%' OR adres ILIKE '%veri hırsızlığı%';
+        """)
+        res_update = await session.execute(sql_cleanup)
+        cleaned_honeypot_count = res_update.rowcount or 0
+
+        # 3. Honeypot temizliği sonrası adresi tamamen boşalan (< 5 karakter) satırlar varsa sil
+        del_empty_stmt = delete(Eczane).where(func.length(func.btrim(Eczane.adres)) < 5)
+        res_empty = await session.execute(del_empty_stmt)
+        deleted_empty_count = res_empty.rowcount or 0
+
+        await session.commit()
+
+    # 4. Tüm Redis önbelleğini temizle ki temizlenen adresler anında API'den dönsün
+    flushed_keys = 0
+    try:
+        client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        keys = [k async for k in client.scan_iter(match="eczaneler:*")]
+        if keys:
+            await client.delete(*keys)
+            flushed_keys = len(keys)
+        await client.aclose()
+    except Exception as exc:
+        logger.warning(f"[Cleanup] Redis temizleme uyarısı: {exc}")
+
+    logger.info(
+        f"[SQL Cleanup Tamamlandı] Honeypot Temizlenen: {cleaned_honeypot_count} | "
+        f"Silinen Sahte Kayıt: {deleted_fake_count} | Silinen Boş Adres: {deleted_empty_count} | "
+        f"Temizlenen Redis Anahtarı: {flushed_keys}"
+    )
+    return {
+        "status": "success",
+        "cleaned_honeypot_records": cleaned_honeypot_count,
+        "deleted_fake_records": deleted_fake_count,
+        "deleted_empty_after_cleanup": deleted_empty_count,
+        "flushed_redis_keys": flushed_keys,
     }
 
 
