@@ -1,12 +1,16 @@
 "use client";
 
 import React, { useEffect, useMemo } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Eczane, TURKIYE_81_ILLER } from "@/types/eczane";
 
-// Varsayılan Merkez Koordinatları (Ankara)
+// Türkiye Geneli Harita Merkezi (Karşılama Ekranı)
+const TURKEY_OVERVIEW_CENTER: [number, number] = [39.0, 35.2];
+const TURKEY_OVERVIEW_ZOOM = 6;
+
+// Varsayılan Şehir Merkez Koordinatları (Yedek)
 const DEFAULT_CENTER: [number, number] = [39.9208, 32.8541];
 
 // Ankara ilçeleri için detaylı koordinat yedeği
@@ -109,19 +113,42 @@ const createPharmacyIcon = (isSelected: boolean) =>
   });
 
 /**
- * Şehir değiştiğinde veya listeden bir eczane seçildiğinde haritayı ilgili konuma uçuran kontrolcü
+ * Türkiye Karşılama Haritası İçin 81 İl Plaka İkonu
+ */
+const createCityBadgeIcon = (plaka: string, name: string) =>
+  L.divIcon({
+    className: "custom-city-marker",
+    html: `
+      <div class="group flex items-center gap-1 bg-white/95 hover:bg-red-600 text-slate-800 hover:text-white px-2 py-0.5 rounded-full shadow-md border border-slate-300 hover:border-red-700 transition-all duration-200 cursor-pointer whitespace-nowrap hover:scale-110">
+        <span class="bg-red-600 group-hover:bg-white text-white group-hover:text-red-600 text-[10px] font-extrabold px-1.5 py-0.2 rounded-full">${plaka}</span>
+        <span class="text-[11px] font-bold pr-1">${name}</span>
+      </div>
+    `,
+    iconSize: [86, 26],
+    iconAnchor: [43, 13],
+  });
+
+/**
+ * Şehir değiştiğinde, karşılama ekranına dönüldüğünde veya listeden bir eczane seçildiğinde
+ * haritayı ilgili konuma uçuran kontrolcü
  */
 function MapViewportController({
   selectedCity,
   selectedEczane,
 }: {
-  selectedCity: string;
+  selectedCity: string | null;
   selectedEczane: Eczane | null;
 }) {
   const map = useMap();
 
-  // 1. Kullanıcı Dropdown'dan yeni bir şehir seçtiğinde haritayı o şehrin merkezine uçur
   useEffect(() => {
+    if (!selectedCity) {
+      map.flyTo(TURKEY_OVERVIEW_CENTER, TURKEY_OVERVIEW_ZOOM, {
+        animate: true,
+        duration: 1.2,
+      });
+      return;
+    }
     const cityCenter = CITY_CENTER_MAP[selectedCity] || DEFAULT_CENTER;
     map.flyTo(cityCenter, 11, {
       animate: true,
@@ -129,9 +156,8 @@ function MapViewportController({
     });
   }, [selectedCity, map]);
 
-  // 2. Kullanıcı listeden spesifik bir eczaneye tıkladığında o eczanenin pinine yakınlaş
   useEffect(() => {
-    if (selectedEczane) {
+    if (selectedEczane && selectedCity) {
       const coords = resolveEczaneCoords(selectedEczane, selectedCity);
       map.flyTo(coords, 15, {
         animate: true,
@@ -144,11 +170,12 @@ function MapViewportController({
 }
 
 interface MapComponentProps {
-  selectedCity: string;
+  selectedCity: string | null;
   selectedCityName: string;
   eczaneler: Eczane[];
   selectedEczane: Eczane | null;
   onSelectEczane: (eczane: Eczane) => void;
+  onSelectCity?: (citySlug: string) => void;
 }
 
 export default function MapComponent({
@@ -157,11 +184,15 @@ export default function MapComponent({
   eczaneler,
   selectedEczane,
   onSelectEczane,
+  onSelectCity,
 }: MapComponentProps) {
   const defaultIcon = useMemo(() => createPharmacyIcon(false), []);
   const selectedIcon = useMemo(() => createPharmacyIcon(true), []);
 
-  const initialCenter = CITY_CENTER_MAP[selectedCity] || DEFAULT_CENTER;
+  const initialCenter = selectedCity
+    ? CITY_CENTER_MAP[selectedCity] || DEFAULT_CENTER
+    : TURKEY_OVERVIEW_CENTER;
+  const initialZoom = selectedCity ? 11 : TURKEY_OVERVIEW_ZOOM;
 
   // Google Haritalar Yol Tarifi URL üreticisi
   const getDirectionsUrl = (eczane: Eczane) => {
@@ -178,7 +209,7 @@ export default function MapComponent({
     <div className="w-full h-full relative">
       <MapContainer
         center={initialCenter}
-        zoom={11}
+        zoom={initialZoom}
         scrollWheelZoom={true}
         className="w-full h-full"
       >
@@ -193,58 +224,80 @@ export default function MapComponent({
           selectedEczane={selectedEczane}
         />
 
-        {/* Eczane Pinleri (Markers) */}
-        {eczaneler.map((eczane) => {
-          const position = resolveEczaneCoords(eczane, selectedCity);
-          const isSelected = selectedEczane?.id === eczane.id;
-
-          return (
+        {/* MOD 1: Şehir henüz seçilmediyse Türkiye 81 İl İnteraktif Seçim Pinlerini Göster */}
+        {!selectedCity &&
+          TURKIYE_81_ILLER.map((city) => (
             <Marker
-              key={eczane.id}
-              position={position}
-              icon={isSelected ? selectedIcon : defaultIcon}
+              key={city.slug}
+              position={city.center}
+              icon={createCityBadgeIcon(city.plaka, city.name)}
               eventHandlers={{
-                click: () => onSelectEczane(eczane),
+                click: () => {
+                  if (onSelectCity) onSelectCity(city.slug);
+                },
               }}
             >
-              <Popup minWidth={250} maxWidth={300}>
-                <div className="flex flex-col gap-2 text-slate-800">
-                  <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
-                    <h3 className="font-bold text-base text-slate-900 leading-snug">
-                      {eczane.isim}
-                    </h3>
-                    <span className="shrink-0 bg-red-50 text-red-700 border border-red-200 text-xs font-semibold px-2 py-0.5 rounded-full">
-                      {eczane.ilce}
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-slate-600 leading-relaxed m-0">
-                    📍 {eczane.adres}
-                  </p>
-
-                  {eczane.telefon && (
-                    <a
-                      href={`tel:${eczane.telefon.replace(/\s+/g, "")}`}
-                      className="text-xs font-semibold text-slate-700 hover:text-red-600 flex items-center gap-1.5 no-underline"
-                    >
-                      📞 <span>{eczane.telefon}</span>
-                    </a>
-                  )}
-
-                  <a
-                    href={getDirectionsUrl(eczane)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-1 w-full bg-red-600 hover:bg-red-700 !text-white font-semibold text-xs py-2 px-3 rounded-lg text-center transition-colors shadow-sm flex items-center justify-center gap-1.5 no-underline"
-                  >
-                    <span>🗺️</span>
-                    <span>Yol Tarifi Al (Google Maps)</span>
-                  </a>
-                </div>
-              </Popup>
+              <Tooltip direction="top" offset={[0, -10]}>
+                <span className="font-bold text-xs">
+                  {city.plaka} - {city.name} Nöbetçi Eczanelerini Aç
+                </span>
+              </Tooltip>
             </Marker>
-          );
-        })}
+          ))}
+
+        {/* MOD 2: Şehir seçildiyse O İlin Nöbetçi Eczane Pinlerini Göster */}
+        {selectedCity &&
+          eczaneler.map((eczane) => {
+            const position = resolveEczaneCoords(eczane, selectedCity);
+            const isSelected = selectedEczane?.id === eczane.id;
+
+            return (
+              <Marker
+                key={eczane.id}
+                position={position}
+                icon={isSelected ? selectedIcon : defaultIcon}
+                eventHandlers={{
+                  click: () => onSelectEczane(eczane),
+                }}
+              >
+                <Popup minWidth={250} maxWidth={300}>
+                  <div className="flex flex-col gap-2 text-slate-800">
+                    <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
+                      <h3 className="font-bold text-base text-slate-900 leading-snug">
+                        {eczane.isim}
+                      </h3>
+                      <span className="shrink-0 bg-red-50 text-red-700 border border-red-200 text-xs font-semibold px-2 py-0.5 rounded-full">
+                        {eczane.ilce}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-600 leading-relaxed m-0">
+                      📍 {eczane.adres}
+                    </p>
+
+                    {eczane.telefon && (
+                      <a
+                        href={`tel:${eczane.telefon.replace(/\s+/g, "")}`}
+                        className="text-xs font-semibold text-slate-700 hover:text-red-600 flex items-center gap-1.5 no-underline"
+                      >
+                        📞 <span>{eczane.telefon}</span>
+                      </a>
+                    )}
+
+                    <a
+                      href={getDirectionsUrl(eczane)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 w-full bg-red-600 hover:bg-red-700 !text-white font-semibold text-xs py-2 px-3 rounded-lg text-center transition-colors shadow-sm flex items-center justify-center gap-1.5 no-underline"
+                    >
+                      <span>🗺️</span>
+                      <span>Yol Tarifi Al (Google Maps)</span>
+                    </a>
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
       </MapContainer>
     </div>
   );

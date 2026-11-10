@@ -17,6 +17,7 @@ from app.schemas.eczane import EczaneResponse
 from app.services.scraper import (
     TURKIYE_81_IL_SLUGS,
     sanitize_existing_database_records,
+    scan_coordinate_outliers,
     scrape_and_save_all_eczaneler,
 )
 
@@ -123,6 +124,17 @@ async def get_database_stats(
 )
 async def trigger_database_cleanup() -> dict:
     return await sanitize_existing_database_records()
+
+
+@router.get(
+    "/system/outliers",
+    summary="Haversine formülü ile aykırı koordinatlı (hatalı pin) eczaneleri tespit et",
+)
+async def get_coordinate_outliers(
+    threshold_km: float = 50.0,
+    fix: bool = False,
+) -> dict:
+    return await scan_coordinate_outliers(threshold_km=threshold_km, fix_outliers=fix)
 
 
 # ==========================================

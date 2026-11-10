@@ -2,9 +2,26 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Ankara Nöbetçi Eczaneler | Canlı Harita",
+  title: {
+    default: "Türkiye 81 İl Nöbetçi Eczaneler | Canlı Harita",
+    template: "%s | Canlı Nöbetçi Eczane Haritası",
+  },
   description:
-    "Ankara genelindeki güncel nöbetçi eczaneleri interaktif harita üzerinde görüntüleyin, ilçe bazlı filtreleyin ve yol tarifi alın.",
+    "Türkiye genelinde 81 il ve tüm ilçelerdeki güncel nöbetçi eczaneleri interaktif harita üzerinde görüntüleyin, konumunuza en yakın eczaneyi bulun ve yol tarifi alın.",
+  keywords: [
+    "nöbetçi eczane",
+    "nöbetçi eczaneler",
+    "canlı nöbetçi eczane haritası",
+    "en yakın nöbetçi eczane",
+    "81 il nöbetçi eczane",
+  ],
+  openGraph: {
+    title: "Türkiye 81 İl Nöbetçi Eczaneler | Canlı Harita",
+    description:
+      "Bulunduğunuz şehri seçin veya konumunuzu kullanarak size en yakın açık nöbetçi eczaneleri haritada anında görüntüleyin.",
+    locale: "tr_TR",
+    type: "website",
+  },
 };
 
 export default function RootLayout({

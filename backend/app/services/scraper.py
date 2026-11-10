@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import random
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -76,6 +77,81 @@ SEHIR_TURKCE_ISIM_MAP: Dict[str, str] = {
     "ardahan": "Ardahan", "igdir": "Iğdır", "yalova": "Yalova", "karabuk": "Karabük",
     "kilis": "Kilis", "osmaniye": "Osmaniye", "duzce": "Düzce",
 }
+
+# Türkiye 81 İl Standart Merkez Koordinatları (Haversine Outlier Denetimi İçin)
+SEHIR_MERKEZ_KOORDINATLARI: Dict[str, Tuple[float, float]] = {
+    "adana": (37.0000, 35.3213), "adiyaman": (37.7648, 38.2786),
+    "afyonkarahisar": (38.7507, 30.5567), "agri": (39.7191, 43.0503),
+    "amasya": (40.6499, 35.8353), "ankara": (39.9208, 32.8541),
+    "antalya": (36.8969, 30.7133), "artvin": (41.1828, 41.8183),
+    "aydin": (37.8560, 27.8416), "balikesir": (39.6484, 27.8826),
+    "bilecik": (40.1451, 29.9799), "bingol": (38.8854, 40.4980),
+    "bitlis": (38.4006, 42.1095), "bolu": (40.7392, 31.6089),
+    "burdur": (37.7203, 30.2908), "bursa": (40.1885, 29.0610),
+    "canakkale": (40.1553, 26.4142), "cankiri": (40.6013, 33.6134),
+    "corum": (40.5506, 34.9556), "denizli": (37.7765, 29.0864),
+    "diyarbakir": (37.9144, 40.2306), "edirne": (41.6771, 26.5557),
+    "elazig": (38.6810, 39.2264), "erzincan": (39.7500, 39.5000),
+    "erzurum": (39.9000, 41.2700), "eskisehir": (39.7767, 30.5206),
+    "gaziantep": (37.0662, 37.3833), "giresun": (40.9128, 38.3895),
+    "gumushane": (40.4603, 39.4814), "hakkari": (37.5833, 43.7333),
+    "hatay": (36.2021, 36.1600), "isparta": (37.7648, 30.5566),
+    "mersin": (36.8000, 34.6333), "istanbul": (41.0082, 28.9784),
+    "izmir": (38.4237, 27.1428), "kars": (40.6013, 43.0975),
+    "kastamonu": (41.3887, 33.7827), "kayseri": (38.7312, 35.4787),
+    "kirklareli": (41.7333, 27.2167), "kirsehir": (39.1425, 34.1709),
+    "kocaeli": (40.7654, 29.9408), "konya": (37.8667, 32.4833),
+    "kutahya": (39.4167, 29.9833), "malatya": (38.3552, 38.3095),
+    "manisa": (38.6191, 27.4289), "kahramanmaras": (37.5858, 36.9371),
+    "mardin": (37.3212, 40.7245), "mugla": (37.2153, 28.3636),
+    "mus": (38.9462, 41.7539), "nevsehir": (38.6244, 34.7144),
+    "nigde": (37.9667, 34.6833), "ordu": (40.9839, 37.8764),
+    "rize": (41.0201, 40.5234), "sakarya": (40.7569, 30.3783),
+    "samsun": (41.2867, 36.3300), "siirt": (37.9333, 41.9500),
+    "sinop": (42.0231, 35.1531), "sivas": (39.7477, 37.0179),
+    "tekirdag": (40.9833, 27.5167), "tokat": (40.3167, 36.5500),
+    "trabzon": (41.0027, 39.7168), "tunceli": (39.1079, 39.5401),
+    "sanliurfa": (37.1591, 38.7969), "usak": (38.6823, 29.4082),
+    "van": (38.4891, 43.4089), "yozgat": (39.8181, 34.8147),
+    "zonguldak": (41.4564, 31.7987), "aksaray": (38.3687, 34.0370),
+    "bayburt": (40.2552, 40.2249), "karaman": (37.1759, 33.2287),
+    "kirikkale": (39.8468, 33.5153), "batman": (37.8812, 41.1351),
+    "sirnak": (37.5164, 42.4611), "bartin": (41.6344, 32.3375),
+    "ardahan": (41.1105, 42.7022), "igdir": (39.9167, 44.0333),
+    "yalova": (40.6500, 29.2667), "karabuk": (41.2000, 32.6333),
+    "kilis": (36.7184, 37.1212), "osmaniye": (37.0742, 36.2478),
+    "duzce": (40.8438, 31.1565),
+}
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    İki coğrafi koordinat (enlem/boylam) arasındaki kuş uçuşu mesafeyi
+    Haversine formülü ile kilometre (km) cinsinden hesaplar.
+    """
+    r_earth = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(d_phi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
+    )
+    return 2.0 * r_earth * math.asin(math.sqrt(min(1.0, max(0.0, a))))
+
+
+def _is_coordinate_valid_for_city(lat: float, lon: float, sehir: str, max_km: float = 160.0) -> bool:
+    """
+    Geocoding servisinden dönen koordinatın Türkiye sınırları içinde ve
+    ilgili ilin sınırlarına (en uzak dış ilçeler dahil ~160 km) makul mesafede olduğunu doğrular.
+    """
+    if not (35.5 <= lat <= 42.5 and 25.5 <= lon <= 45.0):
+        return False
+    city_center = SEHIR_MERKEZ_KOORDINATLARI.get(sehir.strip().lower())
+    if city_center is None:
+        return True
+    return haversine_km(lat, lon, city_center[0], city_center[1]) <= max_km
 
 NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 ARCGIS_GEOCODE_URL = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
@@ -226,11 +302,15 @@ async def fetch_coordinates_from_address(
                 if isinstance(results, list) and len(results) > 0:
                     lat = float(results[0]["lat"])
                     lon = float(results[0]["lon"])
-                    if 35.5 <= lat <= 42.5 and 25.5 <= lon <= 45.0:
+                    if _is_coordinate_valid_for_city(lat, lon, sehir):
                         logger.info(
                             f"[Nominatim Başarılı] '{isim}' ({sehir_tr}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
                         )
                         return lat, lon
+                    else:
+                        logger.warning(
+                            f"[Nominatim Reddedildi - Aykırı Mesafe] '{isim}' ({sehir_tr}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
+                        )
             except Exception as exc:
                 logger.warning(f"[Nominatim Uyarı] '{isim}' ({query}): {exc}")
 
@@ -250,11 +330,15 @@ async def fetch_coordinates_from_address(
             if candidates and candidates[0].get("score", 0) >= 75:
                 loc = candidates[0]["location"]
                 lat, lon = float(loc["y"]), float(loc["x"])
-                if 35.5 <= lat <= 42.5 and 25.5 <= lon <= 45.0:
+                if _is_coordinate_valid_for_city(lat, lon, sehir):
                     logger.info(
                         f"[Fuzzy Geocoding Başarılı] '{isim}' ({sehir_tr}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
                     )
                     return lat, lon
+                else:
+                    logger.warning(
+                        f"[Fuzzy Geocoding Reddedildi - Aykırı Mesafe] '{isim}' ({sehir_tr}/{ilce}) -> ({lat:.5f}, {lon:.5f})"
+                    )
         except Exception as exc:
             logger.warning(f"[Fuzzy Geocoding Uyarı] '{isim}': {exc}")
 
@@ -802,6 +886,160 @@ async def sanitize_existing_database_records() -> dict:
         "deleted_fake_records": deleted_fake_count,
         "deleted_empty_after_cleanup": deleted_empty_count,
         "flushed_redis_keys": flushed_keys,
+    }
+
+
+async def scan_coordinate_outliers(
+    threshold_km: float = 50.0,
+    fix_outliers: bool = False,
+) -> dict:
+    """
+    Haversine Formülü ile Pin Doğruluğu ve Aykırı Değer (Outlier) Tarayıcısı.
+    - Veritabanındaki her eczanenin (enlem, boylam) koordinatını:
+      1. Kayıtlı olduğu ilin standart merkez koordinatıyla (SEHIR_MERKEZ_KOORDINATLARI)
+      2. Aynı ilçedeki diğer eczanelerin medyan (ilçe merkezi) koordinatıyla
+      3. Türkiye'deki 81 il merkezi arasından fiziksel olarak en yakın olduğu il ile
+      karşılaştırır.
+    - `fix_outliers=True` verilirse, kendi ilçe/il merkezinden sapmış (başka şehre düşmüş)
+      hatalı pinlerin koordinatlarını sıfırlar veya yeniden geocode eder.
+    """
+    async with AsyncSessionLocal() as session:
+        latest_date_stmt = select(func.max(Eczane.nobet_tarihi))
+        active_date = (await session.execute(latest_date_stmt)).scalar_one_or_none()
+
+        stmt = select(Eczane).where(
+            Eczane.nobet_tarihi == active_date,
+            Eczane.enlem.is_not(None),
+            Eczane.boylam.is_not(None),
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+        # 1. İlçe bazlı medyan (küme merkezi) koordinatlarını tüm geçmiş+güncel veriden hesapla
+        all_coords_stmt = select(Eczane.sehir, Eczane.ilce, Eczane.enlem, Eczane.boylam).where(
+            Eczane.enlem.is_not(None),
+            Eczane.boylam.is_not(None),
+        )
+        all_coord_rows = (await session.execute(all_coords_stmt)).all()
+
+        district_groups: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
+        for cr in all_coord_rows:
+            key = (cr.sehir.strip().lower(), cr.ilce.strip().lower())
+            district_groups.setdefault(key, []).append((float(cr.enlem), float(cr.boylam)))
+
+        district_Reference: Dict[Tuple[str, str], Tuple[float, float]] = {}
+        district_counts: Dict[Tuple[str, str], int] = {}
+        for key, coords in district_groups.items():
+            district_counts[key] = len(coords)
+            if len(coords) >= 2:
+                lats = sorted(c[0] for c in coords)
+                lons = sorted(c[1] for c in coords)
+                mid = len(coords) // 2
+                district_Reference[key] = (lats[mid], lons[mid])
+            else:
+                sehir_center = SEHIR_MERKEZ_KOORDINATLARI.get(key[0], (39.9208, 32.8541))
+                district_Reference[key] = sehir_center
+
+        critical_outliers: List[dict] = []
+        outer_district_pins: List[dict] = []
+        fixed_count = 0
+
+        for r in rows:
+            sehir_slug = r.sehir.strip().lower()
+            ilce_norm = r.ilce.strip().lower()
+            ilce_key = (sehir_slug, ilce_norm)
+            lat, lon = float(r.enlem), float(r.boylam)
+
+            city_center = SEHIR_MERKEZ_KOORDINATLARI.get(sehir_slug, (39.9208, 32.8541))
+            dist_to_city_km = round(haversine_km(lat, lon, city_center[0], city_center[1]), 2)
+
+            if ilce_norm == "merkez":
+                ilce_center = city_center
+                has_district_cluster = True
+                dist_to_ilce_km = dist_to_city_km
+            else:
+                ilce_center = district_Reference.get(ilce_key, city_center)
+                has_district_cluster = district_counts.get(ilce_key, 0) >= 2
+                dist_to_ilce_km = (
+                    round(haversine_km(lat, lon, ilce_center[0], ilce_center[1]), 2)
+                    if has_district_cluster
+                    else dist_to_city_km
+                )
+
+            # En yakın il merkezini bul
+            closest_city_slug = sehir_slug
+            closest_city_km = dist_to_city_km
+            for cand_slug, (c_lat, c_lon) in SEHIR_MERKEZ_KOORDINATLARI.items():
+                d = haversine_km(lat, lon, c_lat, c_lon)
+                if d < closest_city_km:
+                    closest_city_km = round(d, 2)
+                    closest_city_slug = cand_slug
+
+            if dist_to_city_km > threshold_km or (has_district_cluster and dist_to_ilce_km > 40.0):
+                item_info = {
+                    "id": str(r.id),
+                    "sehir": sehir_slug,
+                    "ilce": r.ilce,
+                    "isim": r.isim,
+                    "adres": r.adres,
+                    "enlem": lat,
+                    "boylam": lon,
+                    "il_merkezine_mesafe_km": dist_to_city_km,
+                    "ilce_merkezine_mesafe_km": dist_to_ilce_km,
+                    "fiziksel_en_yakin_il": closest_city_slug,
+                    "en_yakin_ile_mesafe_km": round(closest_city_km, 2),
+                }
+
+                # Kesin Hatalı Pin (Outlier) Kriterleri:
+                # 1) Türkiye'de hiçbir ilçe kendi il merkezine 185 km'den uzak değildir (Örn: Şırnak -> İstanbul 1206 km)
+                # 2) 'Merkez' ilçede kayıtlı olup il merkezinden > 45 km uzakta olanlar
+                # 3) Aynı ilçedeki diğer eczanelerin küme merkezinden > 40 km sapanlar
+                # 4) İlçe kümesi olmayan tekil kayıtlarda başka bir ilin tam merkezine (< 25 km) düşüp kendi ilinden > 85 km uzakta olanlar
+                is_wrong_pin = (
+                    dist_to_city_km > 185.0
+                    or (ilce_norm == "merkez" and dist_to_city_km > 45.0)
+                    or (has_district_cluster and dist_to_ilce_km > 40.0)
+                    or (
+                        not has_district_cluster
+                        and closest_city_slug != sehir_slug
+                        and closest_city_km < 25.0
+                        and dist_to_city_km > 85.0
+                    )
+                )
+
+                if is_wrong_pin:
+                    item_info["anomali_tipi"] = "HATALI_PIN_BASKA_SEHIR_VEYA_SAPMA"
+                    critical_outliers.append(item_info)
+                    if fix_outliers:
+                        r.enlem = None
+                        r.boylam = None
+                        fixed_count += 1
+                else:
+                    item_info["anomali_tipi"] = "UZAK_DIS_ILCE_NORMAL"
+                    outer_district_pins.append(item_info)
+
+        if fix_outliers and fixed_count > 0:
+            await session.commit()
+            try:
+                client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+                keys = [k async for k in client.scan_iter(match="eczaneler:*")]
+                if keys:
+                    await client.delete(*keys)
+                await client.aclose()
+            except Exception:
+                pass
+
+    critical_outliers.sort(key=lambda x: x["il_merkezine_mesafe_km"], reverse=True)
+    outer_district_pins.sort(key=lambda x: x["il_merkezine_mesafe_km"], reverse=True)
+
+    return {
+        "aktif_nobet_tarihi": str(active_date),
+        "incelenen_koordinatli_eczane": len(rows),
+        "esik_mesafe_km": threshold_km,
+        "kesin_hatali_pin_sayisi": len(critical_outliers),
+        "uzak_dis_ilce_eczane_sayisi": len(outer_district_pins),
+        "duzeltilen_kayit_sayisi": fixed_count,
+        "kesin_hatali_pinler": critical_outliers,
+        "uzak_dis_ilce_eczaneleri": outer_district_pins[:30],
     }
 
 
