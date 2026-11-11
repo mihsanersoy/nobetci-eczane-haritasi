@@ -15,8 +15,8 @@ const MapComponent = dynamic(() => import("@/components/MapComponent"), {
   ),
 });
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+// Next.js rewrites() köprüsü üzerinden hem localhost hem Ngrok ile sorunsuz çalışır
+const API_BASE_URL = "/api/v1";
 
 const POPULAR_CITIES = [
   "istanbul",
