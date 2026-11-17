@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Float, Index, String, Text
+from sqlalchemy import Date, DateTime, Float, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,10 +42,18 @@ class Eczane(Base):
         nullable=False,
     )
 
-    # Bileşik İndeks (Composite Index):
-    # Şehir, ilçe ve nöbet tarihine göre yapılan sorguları maksimum hızda çalıştırmak için
+    # Bileşik İndeks (Composite Index) ve Benzersizlik Kısıtlaması (Unique Constraint):
+    # Aynı gün (nobet_tarihi), aynı şehir ve ilçede aynı eczanenin mükerrer (duplicate)
+    # kaydedilmesini veritabanı motoru seviyesinde kesin olarak engeller.
     __table_args__ = (
         Index("ix_eczaneler_sehir_ilce_nobet_tarihi", "sehir", "ilce", "nobet_tarihi"),
+        UniqueConstraint(
+            "isim",
+            "sehir",
+            "ilce",
+            "nobet_tarihi",
+            name="uq_eczane_gunluk_nobet",
+        ),
     )
 
     def __repr__(self) -> str:

@@ -3,6 +3,7 @@ import logging
 import math
 import random
 import re
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -11,6 +12,7 @@ import httpx
 import redis.asyncio as aioredis
 from bs4 import BeautifulSoup, Tag
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 try:
@@ -629,7 +631,13 @@ async def upsert_eczaneler(
     target_date: date,
 ) -> Tuple[int, int]:
     """
-    Belirli bir şehre ait çekilen nöbetçi eczaneleri veritabanına UPSERT mantığıyla kaydeder.
+    Belirli bir şehre ait çekilen nöbetçi eczaneleri PostgreSQL Native Atomic UPSERT
+    (`INSERT ... ON CONFLICT ON CONSTRAINT uq_eczane_gunluk_nobet DO UPDATE`)
+    mantığıyla kaydeder.
+    - Eşzamanlı (concurrent) taramalarda dahi Duplicate (mükerrer) kayıt oluşmasını
+      veya `UniqueViolationError` ile uygulamanın çökmesini %100 engeller.
+    - Mevcut kaydın koordinatı varsa ve yeni gelen veride koordinat yoksa `COALESCE`
+      ile mevcut doğrulanmış koordinatı korur.
     """
     if not eczaneler:
         return 0, 0
@@ -653,72 +661,74 @@ async def upsert_eczaneler(
     processed_keys = set()
 
     for item in eczaneler:
-        key = (item.isim.strip().lower(), item.sehir.strip().lower(), item.ilce.strip().lower())
+        clean_isim = _clean_text(item.isim)[:255]
+        clean_ilce = _clean_text(item.ilce)[:100]
+        key = (clean_isim.lower(), sehir_normalized, clean_ilce.lower())
+
         if key in processed_keys:
             continue
         processed_keys.add(key)
 
-        if key in existing_map:
-            db_obj = existing_map[key]
-            db_obj.adres = item.adres
-            db_obj.telefon = item.telefon
+        existing_obj = existing_map.get(key)
+        # Eğer veritabanında harf büyüklüğü farklı bir kayıt zaten varsa (Örn: "MERKEZ" vs "Merkez"),
+        # UNIQUE kısıtlamasıyla tam eşleşmesi için mevcut sütun değerlerini baz al
+        target_isim = existing_obj.isim if existing_obj else clean_isim
+        target_ilce = existing_obj.ilce if existing_obj else clean_ilce
 
-            if item.enlem is not None and item.boylam is not None:
-                db_obj.enlem = item.enlem
-                db_obj.boylam = item.boylam
-            elif db_obj.enlem is None or db_obj.boylam is None:
-                hist_lat, hist_lon = await get_historical_coordinates(
-                    session=session,
-                    isim=item.isim,
-                    sehir=item.sehir,
-                    ilce=item.ilce,
+        enlem = item.enlem
+        boylam = item.boylam
+
+        # Mevcut kayıtta koordinat zaten varsa tekrar dış Geocoding API'sine çıkıp vakit kaybetme
+        if (enlem is None or boylam is None) and existing_obj is not None:
+            if existing_obj.enlem is not None and existing_obj.boylam is not None:
+                enlem = existing_obj.enlem
+                boylam = existing_obj.boylam
+
+        # Hâlâ koordinat yoksa önce geçmiş nöbet kayıtlarına (Historical Cache), sonra Geocoding'e bak
+        if enlem is None or boylam is None:
+            enlem, boylam = await get_historical_coordinates(
+                session=session,
+                isim=target_isim,
+                sehir=sehir_normalized,
+                ilce=target_ilce,
+            )
+            if enlem is None or boylam is None:
+                enlem, boylam = await fetch_coordinates_from_address(
+                    isim=target_isim,
+                    sehir=sehir_normalized,
+                    ilce=target_ilce,
+                    adres=item.adres,
                 )
-                if hist_lat is not None and hist_lon is not None:
-                    db_obj.enlem = hist_lat
-                    db_obj.boylam = hist_lon
-                else:
-                    geo_lat, geo_lon = await fetch_coordinates_from_address(
-                        isim=item.isim,
-                        sehir=item.sehir,
-                        ilce=item.ilce,
-                        adres=item.adres,
-                    )
-                    if geo_lat is not None and geo_lon is not None:
-                        db_obj.enlem = geo_lat
-                        db_obj.boylam = geo_lon
 
+        # PostgreSQL Native ON CONFLICT DO UPDATE (Atomik Upsert)
+        insert_stmt = pg_insert(Eczane).values(
+            id=uuid.uuid4(),
+            isim=target_isim,
+            sehir=sehir_normalized,
+            ilce=target_ilce,
+            adres=item.adres,
+            telefon=item.telefon,
+            enlem=enlem,
+            boylam=boylam,
+            nobet_tarihi=target_date,
+            olusturulma_tarihi=datetime.now(timezone.utc),
+        )
+
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            constraint="uq_eczane_gunluk_nobet",
+            set_={
+                "adres": insert_stmt.excluded.adres,
+                "telefon": func.coalesce(insert_stmt.excluded.telefon, Eczane.telefon),
+                "enlem": func.coalesce(insert_stmt.excluded.enlem, Eczane.enlem),
+                "boylam": func.coalesce(insert_stmt.excluded.boylam, Eczane.boylam),
+                "olusturulma_tarihi": insert_stmt.excluded.olusturulma_tarihi,
+            },
+        )
+        await session.execute(upsert_stmt)
+
+        if existing_obj is not None:
             updated_count += 1
         else:
-            enlem = item.enlem
-            boylam = item.boylam
-
-            if enlem is None or boylam is None:
-                enlem, boylam = await get_historical_coordinates(
-                    session=session,
-                    isim=item.isim,
-                    sehir=item.sehir,
-                    ilce=item.ilce,
-                )
-
-                if enlem is None or boylam is None:
-                    enlem, boylam = await fetch_coordinates_from_address(
-                        isim=item.isim,
-                        sehir=item.sehir,
-                        ilce=item.ilce,
-                        adres=item.adres,
-                    )
-
-            new_obj = Eczane(
-                isim=item.isim,
-                sehir=item.sehir,
-                ilce=item.ilce,
-                adres=item.adres,
-                telefon=item.telefon,
-                enlem=enlem,
-                boylam=boylam,
-                nobet_tarihi=item.nobet_tarihi,
-            )
-            session.add(new_obj)
             inserted_count += 1
 
     await session.commit()
@@ -861,9 +871,51 @@ async def sanitize_existing_database_records() -> dict:
         res_empty = await session.execute(del_empty_stmt)
         deleted_empty_count = res_empty.rowcount or 0
 
+        # 4. Mükerrer (Duplicate) kayıtları temizle:
+        # Aynı (isim, sehir, ilce, nobet_tarihi) grubu içinde koordinatı dolu olanı (enlem IS NOT NULL)
+        # ve en güncel olanı (rnum = 1) bırakıp diğer kopyaları siler.
+        sql_dedup = text("""
+            WITH mukerrer_sirali AS (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY lower(btrim(isim)), lower(btrim(sehir)), lower(btrim(ilce)), nobet_tarihi
+                        ORDER BY (enlem IS NOT NULL AND boylam IS NOT NULL) DESC, olusturulma_tarihi DESC, id DESC
+                    ) AS rnum
+                FROM eczaneler
+            )
+            DELETE FROM eczaneler
+            WHERE id IN (
+                SELECT id FROM mukerrer_sirali WHERE rnum > 1
+            );
+        """)
+        res_dedup = await session.execute(sql_dedup)
+        deleted_duplicates_count = res_dedup.rowcount or 0
+
+        # 5. Sütun kenar boşluklarını standartlaştır ve uq_eczane_gunluk_nobet UNIQUE kısıtlamasını ekle
+        await session.execute(text("""
+            UPDATE eczaneler
+            SET isim = btrim(isim),
+                sehir = lower(btrim(sehir)),
+                ilce = btrim(ilce);
+        """))
+
+        await session.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'uq_eczane_gunluk_nobet'
+                ) THEN
+                    ALTER TABLE eczaneler
+                    ADD CONSTRAINT uq_eczane_gunluk_nobet
+                    UNIQUE (isim, sehir, ilce, nobet_tarihi);
+                END IF;
+            END $$;
+        """))
+
         await session.commit()
 
-    # 4. Tüm Redis önbelleğini temizle ki temizlenen adresler anında API'den dönsün
+    # 6. Tüm Redis önbelleğini temizle ki temizlenen adresler anında API'den dönsün
     flushed_keys = 0
     try:
         client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -876,12 +928,15 @@ async def sanitize_existing_database_records() -> dict:
         logger.warning(f"[Cleanup] Redis temizleme uyarısı: {exc}")
 
     logger.info(
-        f"[SQL Cleanup Tamamlandı] Honeypot Temizlenen: {cleaned_honeypot_count} | "
+        f"[SQL Cleanup Tamamlandı] Silinen Duplicate: {deleted_duplicates_count} | "
+        f"Honeypot Temizlenen: {cleaned_honeypot_count} | "
         f"Silinen Sahte Kayıt: {deleted_fake_count} | Silinen Boş Adres: {deleted_empty_count} | "
         f"Temizlenen Redis Anahtarı: {flushed_keys}"
     )
     return {
         "status": "success",
+        "deleted_duplicate_records": deleted_duplicates_count,
+        "unique_constraint_active": "uq_eczane_gunluk_nobet",
         "cleaned_honeypot_records": cleaned_honeypot_count,
         "deleted_fake_records": deleted_fake_count,
         "deleted_empty_after_cleanup": deleted_empty_count,
